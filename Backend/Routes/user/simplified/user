@@ -2,9 +2,6 @@
 const AWS = require('aws-sdk');
 const dynamodb = new AWS.DynamoDB.DocumentClient();
 
-// Import the feedback service for sentiment analysis
-const feedbackService = require('./feedback-service');
-
 const VEHICLES_TABLE = process.env.VEHICLES_TABLE || 'franchise-vehicles';
 const RESERVATIONS_TABLE = process.env.RESERVATIONS_TABLE || 'vehicle-reservations';
 const FEEDBACK_TABLE = process.env.FEEDBACK_TABLE || 'vehicle-feedback';
@@ -126,7 +123,7 @@ async function handleUserRequest(path, method, queryParams, body, userInfo) {
     if (pathParts.includes('user')) {
         const userIndex = pathParts.indexOf('user');
         userType = 'user';
-        endpoint = pathParts[userIndex + 1]; // reservations, feedback, profile, rides, etc.
+        endpoint = pathParts[userIndex + 1]; // reservations, feedback, profile
         resourceId = pathParts[userIndex + 2]; // specific ID if present
     }
     
@@ -146,43 +143,22 @@ async function handleUserRequest(path, method, queryParams, body, userInfo) {
         case 'profile':
             return await handleProfileEndpoint(method, resourceId, queryParams, body, userInfo);
         
-        case 'analytics':
-            // New endpoint for feedback analytics
-            return await handleAnalyticsEndpoint(method, resourceId, queryParams, body, userInfo);
-        
         default:
             return {
                 success: true,
                 message: 'User API endpoints - Authenticated actions only',
-                note: 'Vehicle browsing and reviews are now available via guest API',
                 availableEndpoints: {
                     'POST /user/reservations': 'Create a new reservation',
                     'GET /user/reservations': 'Get user reservations',
                     'GET /user/reservations/{id}': 'Get specific reservation',
                     'PUT /user/reservations/{id}': 'Update reservation',
                     'DELETE /user/reservations/{id}': 'Cancel reservation',
-                    'POST /user/feedback': 'Submit feedback with sentiment analysis',
-                    'GET /user/feedback': 'Get user feedback history with analytics',
-                    'GET /user/feedback/{id}': 'Get specific feedback with analysis',
-                    'PUT /user/feedback/{id}': 'Update feedback (re-analyzes sentiment)',
+                    'POST /user/feedback': 'Submit feedback',
+                    'GET /user/feedback': 'Get user feedback history',
+                    'GET /user/feedback/{id}': 'Get specific feedback',
+                    'PUT /user/feedback/{id}': 'Update feedback',
                     'DELETE /user/feedback/{id}': 'Delete feedback',
-                    'GET /user/analytics/feedback': 'Get personal feedback analytics',
-                    'POST /user/rides': 'Start a ride from reservation',
-                    'GET /user/rides': 'Get ride history',
-                    'PUT /user/rides/{id}': 'Update ride status',
-                    'GET /user/profile': 'Get user profile',
-                    'PUT /user/profile': 'Update user profile'
-                },
-                publicEndpoints: {
-                    'GET /guest/vehicles': 'Browse available vehicles (no auth required)',
-                    'GET /guest/vehicles/{id}': 'Get vehicle details (no auth required)',
-                    'GET /guest/vehicles/{id}/reviews': 'Get vehicle reviews (no auth required)'
-                },
-                newFeatures: {
-                    sentimentAnalysis: 'All feedback now includes AI-powered sentiment analysis',
-                    insights: 'Automatic insights generation for feedback patterns',
-                    alerts: 'High-priority negative feedback triggers alerts',
-                    analytics: 'Personal feedback analytics and trends'
+                    'GET /user/profile': 'Get user profile'
                 }
             };
     }
@@ -231,14 +207,13 @@ async function handleFeedbackEndpoint(method, feedbackId, queryParams, body, use
             }
         
         case 'POST':
-            // Use enhanced feedback submission with sentiment analysis
-            return await submitFeedbackWithAnalysis(body, userInfo);
+            return await submitFeedback(body, userInfo);
         
         case 'PUT':
             if (!feedbackId) {
                 throw { statusCode: 400, message: 'Feedback ID is required for updates' };
             }
-            return await updateFeedbackWithAnalysis(feedbackId, body, userInfo);
+            return await updateFeedback(feedbackId, body, userInfo);
         
         case 'DELETE':
             if (!feedbackId) {
@@ -248,18 +223,6 @@ async function handleFeedbackEndpoint(method, feedbackId, queryParams, body, use
         
         default:
             throw { statusCode: 405, message: `Method ${method} not allowed for feedback endpoint` };
-    }
-}
-
-async function handleAnalyticsEndpoint(method, resourceId, queryParams, body, userInfo) {
-    switch (method) {
-        case 'GET':
-            if (resourceId === 'feedback') {
-                return await getUserFeedbackAnalytics(userInfo, queryParams);
-            } 
-        
-        default:
-            throw { statusCode: 405, message: `Method ${method} not allowed for analytics endpoint` };
     }
 }
 
@@ -294,7 +257,7 @@ async function getVehicleForReservation(vehicleId) {
     return result.Items[0];
 }
 
-// Reservation-related functions (unchanged from original)
+// RESERVATION FUNCTIONS
 async function createReservation(reservationData, userInfo) {
     console.log('Creating reservation:', reservationData, 'for user:', userInfo.userId);
     
@@ -703,9 +666,9 @@ async function completeReservation(reservationId, userInfo) {
     };
 }
 
-// Enhanced Feedback-related functions with sentiment analysis
-async function submitFeedbackWithAnalysis(feedbackData, userInfo) {
-    console.log('Submitting feedback with analysis:', feedbackData, 'for user:', userInfo.userId);
+// FEEDBACK FUNCTIONS (Simplified)
+async function submitFeedback(feedbackData, userInfo) {
+    console.log('Submitting feedback for user:', userInfo.userId);
     
     // Validate required fields
     const requiredFields = ['reservationId', 'vehicleId', 'rating', 'subject', 'message'];
@@ -733,10 +696,48 @@ async function submitFeedbackWithAnalysis(feedbackData, userInfo) {
         throw { statusCode: 409, message: 'Feedback already exists for this reservation' };
     }
 
-    // Use the enhanced feedback service for sentiment analysis
-    const result = await feedbackService.submitFeedback(feedbackData, userInfo);
-    
-    return result;
+    // Simple sentiment analysis
+    const sentiment = getBasicSentiment(feedbackData.subject, feedbackData.message, feedbackData.rating);
+
+    const feedbackId = generateFeedbackId();
+    const timestamp = new Date().toISOString();
+
+    const feedback = {
+        feedbackId: feedbackId,
+        userId: userInfo.userId,
+        userEmail: userInfo.email,
+        reservationId: feedbackData.reservationId,
+        vehicleId: feedbackData.vehicleId,
+        vehicleType: feedbackData.vehicleType,
+        vehicleModel: feedbackData.vehicleModel,
+        rating: parseInt(feedbackData.rating),
+        category: feedbackData.category || 'overall',
+        subject: feedbackData.subject.trim(),
+        message: feedbackData.message.trim(),
+        wouldRecommend: feedbackData.wouldRecommend !== false,
+        issues: feedbackData.issues || [],
+        
+        // Simple sentiment analysis
+        sentiment: sentiment,
+        
+        createdAt: timestamp,
+        updatedAt: timestamp
+    };
+
+    // Store feedback
+    const params = {
+        TableName: FEEDBACK_TABLE,
+        Item: feedback,
+        ConditionExpression: 'attribute_not_exists(feedbackId)'
+    };
+
+    await dynamodb.put(params).promise();
+
+    return {
+        success: true,
+        feedback: feedback,
+        message: 'Feedback submitted successfully'
+    };
 }
 
 async function getUserFeedback(userInfo, queryParams) {
@@ -761,21 +762,9 @@ async function getUserFeedback(userInfo, queryParams) {
         params.ExpressionAttributeValues[':category'] = queryParams.category;
     }
 
-    if (queryParams.vehicleType) {
-        params.FilterExpression += ' AND vehicleType = :vehicleType';
-        params.ExpressionAttributeValues[':vehicleType'] = queryParams.vehicleType;
-    }
-
-    // Add sentiment filter
     if (queryParams.sentiment) {
         params.FilterExpression += ' AND sentiment = :sentiment';
         params.ExpressionAttributeValues[':sentiment'] = queryParams.sentiment;
-    }
-
-    // Add severity filter
-    if (queryParams.severity) {
-        params.FilterExpression += ' AND severity = :severity';
-        params.ExpressionAttributeValues[':severity'] = queryParams.severity;
     }
 
     const result = await dynamodb.scan(params).promise();
@@ -785,7 +774,7 @@ async function getUserFeedback(userInfo, queryParams) {
         new Date(b.createdAt) - new Date(a.createdAt)
     );
     
-    // Calculate summary statistics
+    // Calculate simple summary statistics
     const summary = {
         totalFeedback: feedback.length,
         averageRating: feedback.length > 0 ? 
@@ -794,12 +783,6 @@ async function getUserFeedback(userInfo, queryParams) {
             positive: feedback.filter(f => f.sentiment === 'positive').length,
             neutral: feedback.filter(f => f.sentiment === 'neutral').length,
             negative: feedback.filter(f => f.sentiment === 'negative').length
-        },
-        severityDistribution: {
-            high: feedback.filter(f => f.severity === 'high').length,
-            medium: feedback.filter(f => f.severity === 'medium').length,
-            low: feedback.filter(f => f.severity === 'low').length,
-            none: feedback.filter(f => f.severity === 'none').length
         }
     };
     
@@ -808,7 +791,7 @@ async function getUserFeedback(userInfo, queryParams) {
         feedback: feedback,
         count: feedback.length,
         summary: summary,
-        message: 'Feedback retrieved successfully with sentiment analysis'
+        message: 'Feedback retrieved successfully'
     };
 }
 
@@ -830,25 +813,15 @@ async function getFeedback(feedbackId, userInfo) {
         throw { statusCode: 404, message: 'Feedback not found' };
     }
 
-    const feedback = result.Items[0];
-    
-    // Add analysis summary if available
-    const analysisInfo = {
-        hasSentimentAnalysis: !!feedback.sentiment,
-        hasInsights: !!(feedback.insights && feedback.insights.length > 0),
-        analysisDate: feedback.analyzedAt || feedback.createdAt
-    };
-
     return {
         success: true,
-        feedback: feedback,
-        analysisInfo: analysisInfo,
+        feedback: result.Items[0],
         message: 'Feedback retrieved successfully'
     };
 }
 
-async function updateFeedbackWithAnalysis(feedbackId, updateData, userInfo) {
-    console.log('Updating feedback with re-analysis:', feedbackId, 'for user:', userInfo.userId);
+async function updateFeedback(feedbackId, updateData, userInfo) {
+    console.log('Updating feedback:', feedbackId, 'for user:', userInfo.userId);
     
     // Get existing feedback
     const existingFeedback = await getFeedback(feedbackId, userInfo);
@@ -889,36 +862,13 @@ async function updateFeedbackWithAnalysis(feedbackId, updateData, userInfo) {
         throw { statusCode: 400, message: 'No valid fields to update' };
     }
     
-    // If text content changed, re-analyze sentiment
-    let sentimentUpdate = {};
-    if (updates.subject || updates.message) {
-        console.log('Text content changed, re-analyzing sentiment...');
+    // Re-analyze sentiment if text content changed
+    if (updates.subject || updates.message || updates.rating) {
+        const newSubject = updates.subject || feedback.subject;
+        const newMessage = updates.message || feedback.message;
+        const newRating = updates.rating || feedback.rating;
         
-        const combinedText = `${updates.subject || feedback.subject} ${updates.message || feedback.message}`;
-        
-        try {
-            const analysis = await feedbackService.analyzeFeedbackSentiment(combinedText);
-            const insights = feedbackService.generateFeedbackInsights(
-                { ...feedback, ...updates }, 
-                analysis
-            );
-            
-            sentimentUpdate = {
-                sentiment: analysis.sentiment,
-                sentimentConfidence: analysis.confidence,
-                emotions: analysis.emotions,
-                keywords: analysis.keywords,
-                categories: analysis.categories,
-                severity: analysis.severity,
-                insights: insights,
-                analyzedAt: new Date().toISOString()
-            };
-            
-            console.log('Re-analysis completed:', sentimentUpdate);
-        } catch (error) {
-            console.error('Error re-analyzing sentiment:', error);
-            // Continue with update even if sentiment analysis fails
-        }
+        updates.sentiment = getBasicSentiment(newSubject, newMessage, newRating);
     }
     
     // Build update expression
@@ -927,16 +877,9 @@ async function updateFeedbackWithAnalysis(feedbackId, updateData, userInfo) {
         ':updatedAt': new Date().toISOString()
     };
     
-    // Add regular updates
     Object.keys(updates).forEach(field => {
         updateExpression += `, ${field} = :${field}`;
         expressionAttributeValues[`:${field}`] = updates[field];
-    });
-    
-    // Add sentiment updates if available
-    Object.keys(sentimentUpdate).forEach(field => {
-        updateExpression += `, ${field} = :${field}`;
-        expressionAttributeValues[`:${field}`] = sentimentUpdate[field];
     });
     
     const params = {
@@ -951,19 +894,11 @@ async function updateFeedbackWithAnalysis(feedbackId, updateData, userInfo) {
     };
 
     const result = await dynamodb.update(params).promise();
-    
-    // Check if updated feedback requires alerts
-    if (sentimentUpdate.severity === 'high') {
-        console.log('Updated feedback has high severity, triggering alert...');
-        // You could call a trigger function here if needed
-    }
 
     return {
         success: true,
         feedback: result.Attributes,
-        reanalyzed: Object.keys(sentimentUpdate).length > 0,
-        message: 'Feedback updated successfully' + 
-                (Object.keys(sentimentUpdate).length > 0 ? ' with sentiment re-analysis' : '')
+        message: 'Feedback updated successfully'
     };
 }
 
@@ -989,44 +924,7 @@ async function deleteFeedback(feedbackId, userInfo) {
     };
 }
 
-// New Analytics Functions
-async function getUserFeedbackAnalytics(userInfo, queryParams) {
-    console.log('Getting personal feedback analytics for user:', userInfo.userId);
-    
-    // Get user's feedback with optional filters
-    const userFeedback = await getUserFeedback(userInfo, queryParams);
-    const feedback = userFeedback.feedback;
-    
-    if (feedback.length === 0) {
-        return {
-            success: true,
-            analytics: {
-                totalFeedback: 0,
-                message: 'No feedback data available for analysis'
-            }
-        };
-    }
-    
-    // Use the feedback service analytics function with user filter
-    const filters = {
-        userId: userInfo.userId,
-        ...queryParams
-    };
-    
-    const analytics = await feedbackService.getFeedbackAnalytics(filters);
-    
-    return {
-        success: true,
-        analytics: {
-            ...analytics,
-            personalInsights: personalInsights,
-            feedbackHistory: feedback.slice(0, 5), // Last 5 feedback items
-        },
-        message: 'Personal feedback analytics retrieved successfully'
-    };
-}
-
-// Profile-related functions
+// PROFILE FUNCTION (Simplified)
 async function getUserProfile(userInfo) {
     // Get user's activity summary
     const reservations = await getUserReservations(userInfo, {});
@@ -1039,25 +937,17 @@ async function getUserProfile(userInfo) {
             email: userInfo.email,
             role: userInfo.role,
             groups: userInfo.groups,
-            registrationDate: userInfo.registrationDate || null,
             activitySummary: {
                 totalReservations: reservations.count,
                 totalFeedback: feedbackData.count,
-                averageRating: feedbackData.summary.averageRating,
-                memberSince: reservations.reservations[reservations.reservations.length - 1]?.createdAt || null
-            },
-            preferences: {
-                notifications: true,
-                marketing: false,
-                reminderEmails: true,
-                feedbackRequests: true
+                averageRating: feedbackData.summary.averageRating
             }
         },
         message: 'Profile retrieved successfully'
     };
 }
 
-// Helper functions
+// HELPER FUNCTIONS
 async function checkReservationConflicts(vehicleId, startDate, endDate, excludeReservationId = null) {
     const params = {
         TableName: RESERVATIONS_TABLE,
@@ -1111,8 +1001,41 @@ async function checkExistingFeedback(reservationId, userId) {
     return result.Items && result.Items.length > 0;
 }
 
+// Simple sentiment analysis based on rating and keywords
+function getBasicSentiment(subject, message, rating) {
+    const text = `${subject} ${message}`.toLowerCase();
+    
+    // Rating-based sentiment (primary factor)
+    let sentiment = 'neutral';
+    if (rating >= 4) {
+        sentiment = 'positive';
+    } else if (rating <= 2) {
+        sentiment = 'negative';
+    }
+    
+    // Keyword-based adjustments
+    const positiveWords = ['great', 'excellent', 'amazing', 'wonderful', 'fantastic', 'love', 'perfect', 'awesome', 'good', 'nice'];
+    const negativeWords = ['terrible', 'awful', 'horrible', 'bad', 'poor', 'disappointing', 'hate', 'worst'];
+    
+    const positiveCount = positiveWords.filter(word => text.includes(word)).length;
+    const negativeCount = negativeWords.filter(word => text.includes(word)).length;
+    
+    // Override rating-based sentiment if strong keywords are present
+    if (positiveCount > negativeCount && positiveCount >= 2) {
+        sentiment = 'positive';
+    } else if (negativeCount > positiveCount && negativeCount >= 2) {
+        sentiment = 'negative';
+    }
+    
+    return sentiment;
+}
+
 function generateReservationId() {
     return 'reservation_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+}
+
+function generateFeedbackId() {
+    return 'feedback_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
 }
 
 function getCorsHeaders() {
