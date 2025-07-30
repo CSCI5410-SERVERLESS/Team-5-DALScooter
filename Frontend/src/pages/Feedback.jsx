@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Filter, TrendingUp, AlertTriangle } from 'lucide-react';
-import { redirectBaseUri } from '../contants/constants';
+import { redirectBaseUri } from '../constants/constants';
 
 const FeedbackModalDisplay = ({ isOpen, onClose }) => {
     const [feedback, setFeedback] = useState([]);

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { redirectBaseUri } from '../contants/constants';
+import { redirectBaseUri } from '../constants/constants';
 import {
     Users,
     UserCheck,

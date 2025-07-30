@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { AlertCircle, Lock, User, UserPlus, Shield, Zap, Sparkles } from 'lucide-react';
-import { cognitoConfig } from '../../contants/constants';
+import { cognitoConfig } from '../../constants/constants';
 function Auth() {
   const [error, setError] = useState('');
   const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'

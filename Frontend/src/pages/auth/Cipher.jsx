@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { CheckCircle, Loader2, Lock } from 'lucide-react';
-import {redirectBaseUri} from '../../contants/constants';
+import {redirectBaseUri} from '../../constants/constants';
 
 function Cipher() {
   const location = useLocation();
