@@ -3,6 +3,3 @@ variable "cognito_user_pool_name" {
   type        = string
 }
 
-variable "api_url" {
-  type = string
-}

@@ -1,0 +1,9 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "COSMOS_ENDPOINT": "https://dalscootercosmos8650.documents.azure.com:443/",
+    "COSMOS_KEY": "J2W1iylUNbbv8gXIT4SlKkEClHT5T8KYDSDK9QYVegeODAS0t65UhWSFyAR6ufOKKLceH9BpjN2hACDbsgIMFA=="
+  }
+}
