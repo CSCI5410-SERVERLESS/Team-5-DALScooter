@@ -1,6 +1,7 @@
 //user-api.js
 const AWS = require('aws-sdk');
 const dynamodb = new AWS.DynamoDB.DocumentClient();
+const sqs = new AWS.SQS();
 
 // Import the feedback service for sentiment analysis
 const feedbackService = require('./feedback-service');
@@ -8,6 +9,8 @@ const feedbackService = require('./feedback-service');
 const VEHICLES_TABLE = process.env.VEHICLES_TABLE || 'franchise-vehicles';
 const RESERVATIONS_TABLE = process.env.RESERVATIONS_TABLE || 'vehicle-reservations';
 const FEEDBACK_TABLE = process.env.FEEDBACK_TABLE || 'vehicle-feedback';
+const USERS_TABLE = process.env.USERS_TABLE || 'users';
+const NOTIFICATION_QUEUE_URL = process.env.NOTIFICATION_QUEUE_URL;
 
 exports.lambdaHandler = async (event) => {
     console.log('User API Event received:', JSON.stringify(event, null, 2));
@@ -150,6 +153,10 @@ async function handleUserRequest(path, method, queryParams, body, userInfo) {
             // New endpoint for feedback analytics
             return await handleAnalyticsEndpoint(method, resourceId, queryParams, body, userInfo);
         
+        // New endpoint for login notification trigger
+        case 'login-success':
+            return await handleLoginSuccessEndpoint(method, body, userInfo);
+        
         default:
             return {
                 success: true,
@@ -171,7 +178,8 @@ async function handleUserRequest(path, method, queryParams, body, userInfo) {
                     'GET /user/rides': 'Get ride history',
                     'PUT /user/rides/{id}': 'Update ride status',
                     'GET /user/profile': 'Get user profile',
-                    'PUT /user/profile': 'Update user profile'
+                    'PUT /user/profile': 'Update user profile',
+                    'POST /user/login-success': 'Trigger login success notification'
                 },
                 publicEndpoints: {
                     'GET /guest/vehicles': 'Browse available vehicles (no auth required)',
@@ -182,7 +190,8 @@ async function handleUserRequest(path, method, queryParams, body, userInfo) {
                     sentimentAnalysis: 'All feedback now includes AI-powered sentiment analysis',
                     insights: 'Automatic insights generation for feedback patterns',
                     alerts: 'High-priority negative feedback triggers alerts',
-                    analytics: 'Personal feedback analytics and trends'
+                    analytics: 'Personal feedback analytics and trends',
+                    notifications: 'Automated notifications for registrations, logins, and bookings'
                 }
             };
     }
@@ -273,6 +282,29 @@ async function handleProfileEndpoint(method, resourceId, queryParams, body, user
     }
 }
 
+// New endpoint to handle login success notifications
+async function handleLoginSuccessEndpoint(method, body, userInfo) {
+    if (method !== 'POST') {
+        throw { statusCode: 405, message: 'Only POST method allowed for login success endpoint' };
+    }
+    
+    // Get user details for notification
+    const userDetails = await getUserDetails(userInfo.userId);
+    
+    // Send login success notification
+    await sendNotification('LOGIN_SUCCESS', {
+        email: userInfo.email,
+        firstName: userDetails?.firstName || 'User',
+        loginTime: new Date().toISOString(),
+        ipAddress: body.ipAddress || 'Unknown'
+    });
+    
+    return {
+        success: true,
+        message: 'Login success notification sent'
+    };
+}
+
 // Helper function to get vehicle details (for reservation validation)
 async function getVehicleForReservation(vehicleId) {
     console.log('Getting vehicle for reservation validation:', vehicleId);
@@ -294,123 +326,209 @@ async function getVehicleForReservation(vehicleId) {
     return result.Items[0];
 }
 
-// Reservation-related functions (unchanged from original)
+// Helper function to get user details
+async function getUserDetails(userId) {
+    try {
+        const params = {
+            TableName: USERS_TABLE,
+            Key: { userId }
+        };
+        
+        const result = await dynamodb.get(params).promise();
+        return result.Item;
+    } catch (error) {
+        console.error('Error getting user details:', error);
+        return null;
+    }
+}
+
+// Notification helper function
+async function sendNotification(type, data) {
+    if (!NOTIFICATION_QUEUE_URL) {
+        console.warn('NOTIFICATION_QUEUE_URL not configured, skipping notification');
+        return;
+    }
+    
+    try {
+        const message = {
+            type: type,
+            ...data,
+            timestamp: new Date().toISOString()
+        };
+        
+        const params = {
+            QueueUrl: NOTIFICATION_QUEUE_URL,
+            MessageBody: JSON.stringify(message),
+            MessageAttributes: {
+                'messageType': {
+                    DataType: 'String',
+                    StringValue: type
+                }
+            }
+        };
+        
+        await sqs.sendMessage(params).promise();
+        console.log(`Notification queued: ${type}`);
+    } catch (error) {
+        console.error('Error sending notification:', error);
+        // Don't throw - notification failure shouldn't break the main operation
+    }
+}
+
+// Reservation-related functions (enhanced with notifications)
 async function createReservation(reservationData, userInfo) {
     console.log('Creating reservation:', reservationData, 'for user:', userInfo.userId);
     
-    // Validate required fields
-    const requiredFields = ['vehicleId', 'startDate', 'endDate'];
-    for (const field of requiredFields) {
-        if (!reservationData[field]) {
-            throw { statusCode: 400, message: `${field} is required` };
+    try {
+        // Validate required fields
+        const requiredFields = ['vehicleId', 'startDate', 'endDate'];
+        for (const field of requiredFields) {
+            if (!reservationData[field]) {
+                throw { statusCode: 400, message: `${field} is required` };
+            }
         }
-    }
 
-    // Validate dates
-    const startDate = new Date(reservationData.startDate);
-    const endDate = new Date(reservationData.endDate);
-    const now = new Date();
+        // Validate dates
+        const startDate = new Date(reservationData.startDate);
+        const endDate = new Date(reservationData.endDate);
+        const now = new Date();
 
-    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-        throw { statusCode: 400, message: 'Invalid date format. Use ISO 8601 format (YYYY-MM-DDTHH:mm:ss.sssZ)' };
-    }
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+            throw { statusCode: 400, message: 'Invalid date format. Use ISO 8601 format (YYYY-MM-DDTHH:mm:ss.sssZ)' };
+        }
 
-    if (startDate >= endDate) {
-        throw { statusCode: 400, message: 'End date must be after start date' };
-    }
+        if (startDate >= endDate) {
+            throw { statusCode: 400, message: 'End date must be after start date' };
+        }
 
-    if (startDate < now) {
-        throw { statusCode: 400, message: 'Start date cannot be in the past' };
-    }
+        if (startDate < now) {
+            throw { statusCode: 400, message: 'Start date cannot be in the past' };
+        }
 
-    // Check if vehicle exists and get its details
-    const vehicle = await getVehicleForReservation(reservationData.vehicleId);
-    
-    if (vehicle.status !== 'available') {
-        throw { statusCode: 409, message: 'Vehicle is not available for reservation' };
-    }
-    
-    // Check for conflicting reservations
-    const hasConflicts = await checkReservationConflicts(
-        reservationData.vehicleId, 
-        startDate, 
-        endDate
-    );
-    
-    if (hasConflicts) {
-        throw { statusCode: 409, message: 'Vehicle is already reserved for the requested time period' };
-    }
+        // Check if vehicle exists and get its details
+        const vehicle = await getVehicleForReservation(reservationData.vehicleId);
+        
+        if (vehicle.status !== 'available') {
+            throw { statusCode: 409, message: 'Vehicle is not available for reservation' };
+        }
+        
+        // Check for conflicting reservations
+        const hasConflicts = await checkReservationConflicts(
+            reservationData.vehicleId, 
+            startDate, 
+            endDate
+        );
+        
+        if (hasConflicts) {
+            throw { statusCode: 409, message: 'Vehicle is already reserved for the requested time period' };
+        }
 
-    // Calculate total cost
-    const durationHours = Math.ceil((endDate - startDate) / (1000 * 60 * 60));
-    let totalCost = durationHours * vehicle.hourlyRate;
-    
-    // Apply discount if provided
-    if (reservationData.discountCode && 
-        reservationData.discountCode.toUpperCase() === vehicle.discountCode &&
-        vehicle.discountPercentage > 0) {
-        const discountAmount = totalCost * (vehicle.discountPercentage / 100);
-        totalCost -= discountAmount;
-    }
+        // Calculate total cost
+        const durationHours = Math.ceil((endDate - startDate) / (1000 * 60 * 60));
+        let totalCost = durationHours * vehicle.hourlyRate;
+        
+        // Apply discount if provided
+        if (reservationData.discountCode && 
+            reservationData.discountCode.toUpperCase() === vehicle.discountCode &&
+            vehicle.discountPercentage > 0) {
+            const discountAmount = totalCost * (vehicle.discountPercentage / 100);
+            totalCost -= discountAmount;
+        }
 
-    const reservationId = generateReservationId();
-    const timestamp = new Date().toISOString();
+        const reservationId = generateReservationId();
+        const timestamp = new Date().toISOString();
+        const accessCode = generateAccessCode();
 
-    const reservation = {
-        reservationId: reservationId,
-        userId: userInfo.userId,
-        userEmail: userInfo.email,
-        vehicleId: reservationData.vehicleId,
-        vehicleType: vehicle.vehicleType,
-        vehicleModel: vehicle.model,
-        startDate: startDate.toISOString(),
-        endDate: endDate.toISOString(),
-        durationHours: durationHours,
-        hourlyRate: vehicle.hourlyRate,
-        discountCode: reservationData.discountCode || null,
-        discountPercentage: (reservationData.discountCode && 
-                           reservationData.discountCode.toUpperCase() === vehicle.discountCode) 
-                           ? vehicle.discountPercentage : 0,
-        totalCost: Math.round(totalCost * 100) / 100, // Round to 2 decimal places
-        status: 'confirmed',
-        notes: reservationData.notes || null,
-        createdAt: timestamp,
-        updatedAt: timestamp
-    };
-
-    // Create reservation
-    const reservationParams = {
-        TableName: RESERVATIONS_TABLE,
-        Item: reservation,
-        ConditionExpression: 'attribute_not_exists(reservationId)'
-    };
-
-    await dynamodb.put(reservationParams).promise();
-
-    // Update vehicle status to reserved
-    const vehicleUpdateParams = {
-        TableName: VEHICLES_TABLE,
-        Key: {
+        const reservation = {
+            reservationId: reservationId,
+            userId: userInfo.userId,
+            userEmail: userInfo.email,
             vehicleId: reservationData.vehicleId,
-            ownerId: vehicle.ownerId
-        },
-        UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
-        ExpressionAttributeNames: {
-            '#status': 'status'
-        },
-        ExpressionAttributeValues: {
-            ':status': 'reserved',
-            ':updatedAt': timestamp
-        }
-    };
-    
-    await dynamodb.update(vehicleUpdateParams).promise();
+            vehicleType: vehicle.vehicleType,
+            vehicleModel: vehicle.model,
+            startDate: startDate.toISOString(),
+            endDate: endDate.toISOString(),
+            durationHours: durationHours,
+            hourlyRate: vehicle.hourlyRate,
+            discountCode: reservationData.discountCode || null,
+            discountPercentage: (reservationData.discountCode && 
+                               reservationData.discountCode.toUpperCase() === vehicle.discountCode) 
+                               ? vehicle.discountPercentage : 0,
+            totalCost: Math.round(totalCost * 100) / 100, // Round to 2 decimal places
+            status: 'confirmed',
+            accessCode: accessCode,
+            notes: reservationData.notes || null,
+            createdAt: timestamp,
+            updatedAt: timestamp
+        };
 
-    return {
-        success: true,
-        reservation: reservation,
-        message: 'Reservation created successfully'
-    };
+        // Create reservation
+        const reservationParams = {
+            TableName: RESERVATIONS_TABLE,
+            Item: reservation,
+            ConditionExpression: 'attribute_not_exists(reservationId)'
+        };
+
+        await dynamodb.put(reservationParams).promise();
+
+        // Update vehicle status to reserved
+        const vehicleUpdateParams = {
+            TableName: VEHICLES_TABLE,
+            Key: {
+                vehicleId: reservationData.vehicleId,
+                ownerId: vehicle.ownerId
+            },
+            UpdateExpression: 'SET #status = :status, updatedAt = :updatedAt',
+            ExpressionAttributeNames: {
+                '#status': 'status'
+            },
+            ExpressionAttributeValues: {
+                ':status': 'reserved',
+                ':updatedAt': timestamp
+            }
+        };
+        
+        await dynamodb.update(vehicleUpdateParams).promise();
+
+        // Get user details for notification
+        const userDetails = await getUserDetails(userInfo.userId);
+
+        // Send booking confirmation notification
+        await sendNotification('BOOKING_CONFIRMATION', {
+            email: userInfo.email,
+            firstName: userDetails?.firstName || 'User',
+            bookingDetails: {
+                bookingId: reservationId,
+                bikeType: vehicle.vehicleType,
+                startTime: startDate.toISOString(),
+                endTime: endDate.toISOString(),
+                accessCode: accessCode,
+                location: vehicle.location || 'Main Campus Bike Station'
+            }
+        });
+
+        return {
+            success: true,
+            reservation: reservation,
+            message: 'Reservation created successfully'
+        };
+        
+    } catch (error) {
+        // Send booking failure notification
+        const userDetails = await getUserDetails(userInfo.userId);
+        
+        await sendNotification('BOOKING_FAILURE', {
+            email: userInfo.email,
+            firstName: userDetails?.firstName || 'User',
+            failureDetails: {
+                bikeType: reservationData.vehicleType || 'Unknown',
+                requestedTime: reservationData.startDate,
+                reason: error.message || 'Unknown error occurred'
+            }
+        });
+        
+        throw error;
+    }
 }
 
 async function getUserReservations(userInfo, queryParams) {
@@ -733,7 +851,7 @@ async function submitFeedbackWithAnalysis(feedbackData, userInfo) {
         throw { statusCode: 409, message: 'Feedback already exists for this reservation' };
     }
 
-    // Use the enhanced feedback service for sentiment analysis (emotions removed)
+    // Use the enhanced feedback service for sentiment analysis
     const result = await feedbackService.submitFeedback(feedbackData, userInfo);
     
     return result;
@@ -906,7 +1024,6 @@ async function updateFeedbackWithAnalysis(feedbackId, updateData, userInfo) {
             sentimentUpdate = {
                 sentiment: analysis.sentiment,
                 sentimentConfidence: analysis.confidence,
-                // emotions removed
                 keywords: analysis.keywords,
                 categories: analysis.categories,
                 severity: analysis.severity,
@@ -1015,6 +1132,9 @@ async function getUserFeedbackAnalytics(userInfo, queryParams) {
     
     const analytics = await feedbackService.getFeedbackAnalytics(filters);
     
+    // Generate personal insights
+    const personalInsights = generatePersonalInsights(feedback);
+    
     return {
         success: true,
         analytics: {
@@ -1113,6 +1233,56 @@ async function checkExistingFeedback(reservationId, userId) {
 
 function generateReservationId() {
     return 'reservation_' + Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+}
+
+function generateAccessCode() {
+    return Math.random().toString(36).substr(2, 8).toUpperCase();
+}
+
+function generatePersonalInsights(feedback) {
+    const insights = [];
+    
+    if (feedback.length === 0) {
+        return insights;
+    }
+    
+    // Average rating insight
+    const avgRating = feedback.reduce((sum, f) => sum + f.rating, 0) / feedback.length;
+    insights.push({
+        type: 'rating_trend',
+        message: `Your average rating is ${avgRating.toFixed(1)} stars`,
+        value: avgRating
+    });
+    
+    // Most used vehicle type
+    const vehicleTypes = feedback.reduce((acc, f) => {
+        acc[f.vehicleType] = (acc[f.vehicleType] || 0) + 1;
+        return acc;
+    }, {});
+    
+    const mostUsedType = Object.keys(vehicleTypes).reduce((a, b) => 
+        vehicleTypes[a] > vehicleTypes[b] ? a : b
+    );
+    
+    insights.push({
+        type: 'preference',
+        message: `You most frequently use ${mostUsedType}`,
+        value: mostUsedType
+    });
+    
+    // Sentiment trend
+    const sentiments = feedback.filter(f => f.sentiment).map(f => f.sentiment);
+    if (sentiments.length > 0) {
+        const positiveFeedback = sentiments.filter(s => s === 'positive').length;
+        const percentage = (positiveFeedback / sentiments.length * 100).toFixed(0);
+        insights.push({
+            type: 'sentiment_trend',
+            message: `${percentage}% of your feedback has been positive`,
+            value: percentage
+        });
+    }
+    
+    return insights;
 }
 
 function getCorsHeaders() {

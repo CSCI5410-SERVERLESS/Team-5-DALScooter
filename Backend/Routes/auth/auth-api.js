@@ -4,6 +4,13 @@ const axios = require('axios');
 const { buildResponse, buildHtmlResponse } = require('./utils/response');
 
 const dynamoClient = new AWS.DynamoDB.DocumentClient();
+const sqs = new AWS.SQS();
+
+// Environment variables
+const SESSIONS_TABLE = process.env.SESSIONS_TABLE || 'AuthSessions';
+const QNA_TABLE = process.env.QNA_TABLE || 'UserSecurityQuestions';
+const USERS_TABLE = process.env.USERS_TABLE || 'users';
+const NOTIFICATION_QUEUE_URL = process.env.NOTIFICATION_QUEUE_URL;
 
 const WORD_BANK = [
     'apple', 'bread', 'chair', 'drink', 'eagle',
@@ -15,7 +22,7 @@ const WORD_BANK = [
 
 exports.handler = async (event) => {
     try {
-        const path = event.path || event.rawPath; // fallback if event.path is undefined
+        const path = event.path || event.rawPath;
         const httpMethod = event.httpMethod || event.requestContext?.http?.method;
 
         if (!path || !httpMethod) {
@@ -52,7 +59,6 @@ exports.handler = async (event) => {
     }
 };
 
-
 // =====================
 // Route Handlers
 // =====================
@@ -71,31 +77,43 @@ async function handleCallback(event) {
     const cognitoTokens = await exchangeCodeForTokens(code);
     const userInfo = await getUserInfoFromToken(cognitoTokens.access_token);
 
+    // Check if this is a new user registration or existing user login
+    const isNewUser = await checkIfNewUser(userInfo.sub);
+    
+    if (isNewUser) {
+        // Store basic user information for new users
+        await storeUserInfo(userInfo);
+    }
+
     // Generate temporary session token
     const tempToken = generateTempToken();
     const sessionData = {
         tempToken,
         userId: userInfo.sub,
+        email: userInfo.email,
+        firstName: userInfo.given_name || extractFirstNameFromEmail(userInfo.email),
         cognitoTokens: cognitoTokens,
         step1Complete: true,
         step2Complete: false,
         step3Complete: false,
+        isNewUser: isNewUser,
         createdAt: Date.now(),
         expiresAt: Date.now() + (15 * 60 * 1000) // 15 minutes
     };
 
     // Store in DynamoDB
     await dynamoClient.put({
-        TableName: process.env.SESSIONS_TABLE || 'AuthSessions',
+        TableName: SESSIONS_TABLE,
         Item: sessionData
     }).promise();
-
 
     const response = {
         tempToken: tempToken,
         nextStep: "qna",
-        message: "Step 1 complete. Please proceed to Q&A verification."
+        message: "Step 1 complete. Please proceed to Q&A verification.",
+        isNewUser: isNewUser
     };
+
     const htmlForm = `
 <!DOCTYPE html>
 <html>
@@ -106,19 +124,26 @@ async function handleCallback(event) {
         .container { text-align: center; padding: 2rem; background: rgba(255,255,255,0.1); border-radius: 20px; backdrop-filter: blur(10px); }
         .spinner { width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.3); border-top: 4px solid white; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 1rem; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .welcome { margin-bottom: 1rem; }
+        .new-user { color: #90EE90; }
+        .returning-user { color: #FFD700; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="spinner"></div>
+        <div class="welcome ${response.isNewUser ? 'new-user' : 'returning-user'}">
+            ${response.isNewUser ? '🎉 Welcome to DALScooter!' : '👋 Welcome back!'}
+        </div>
         <h2>Processing Authentication...</h2>
-        <p>Redirecting to your application...</p>
+        <p>Setting up your ${response.isNewUser ? 'new account' : 'secure login'}...</p>
     </div>
     
     <form id="authForm" data-auth="true" style="display: none;">
         <input type="hidden" name="tempToken" value="${response.tempToken}">
         <input type="hidden" name="nextStep" value="${response.nextStep}">
         <input type="hidden" name="message" value="${response.message}">
+        <input type="hidden" name="isNewUser" value="${response.isNewUser}">
     </form>
     
     <script>
@@ -128,7 +153,8 @@ async function handleCallback(event) {
             const authData = {
                 tempToken: formData.get('tempToken'),
                 nextStep: formData.get('nextStep'),
-                message: formData.get('message')
+                message: formData.get('message'),
+                isNewUser: formData.get('isNewUser') === 'true'
             };
             
             // Base64 encode the data for secure URL transport
@@ -137,7 +163,7 @@ async function handleCallback(event) {
             // Redirect to React app after a short delay
             setTimeout(() => {
                 window.location.href = \`http://localhost:5173/auth/qna/callback?data=\${dataString}\`;
-            }, 1500);
+            }, 2000);
         });
     </script>
 </body>
@@ -186,7 +212,7 @@ async function handleQna(event) {
 
             // Update session to mark step 2 as complete AND store cipher challenge
             await dynamoClient.update({
-                TableName: process.env.SESSIONS_TABLE || 'AuthSessions',
+                TableName: SESSIONS_TABLE,
                 Key: { tempToken },
                 UpdateExpression: 'SET step2Complete = :true, cipherOriginal = :word, cipherShift = :shift, cipherChallenge = :challenge',
                 ExpressionAttributeValues: {
@@ -223,7 +249,7 @@ async function handleQna(event) {
 
         // Store cipher challenge and answer shift in DynamoDB (or update session)
         await dynamoClient.update({
-            TableName: process.env.SESSIONS_TABLE || 'AuthSessions',
+            TableName: SESSIONS_TABLE,
             Key: { tempToken },
             UpdateExpression: 'SET step2Complete = :true, cipherOriginal = :word, cipherShift = :shift, cipherChallenge = :challenge',
             ExpressionAttributeValues: {
@@ -277,9 +303,34 @@ async function handleCipher(event) {
         return buildResponse(403, { message: 'Cipher verification failed' });
     }
 
-    // All steps complete - delete session and return tokens
+    // All steps complete - determine notification type and send appropriate notification
+    try {
+        if (session.isNewUser) {
+            // Send registration success notification
+            await sendNotification('REGISTRATION_SUCCESS', {
+                email: session.email,
+                userType: determineUserType(session.email), // Based on email domain or other logic
+                firstName: session.firstName
+            });
+            console.log('Registration success notification sent for new user:', session.userId);
+        } else {
+            // Send login success notification
+            await sendNotification('LOGIN_SUCCESS', {
+                email: session.email,
+                firstName: session.firstName,
+                loginTime: new Date().toISOString(),
+                ipAddress: getClientIpAddress(event)
+            });
+            console.log('Login success notification sent for returning user:', session.userId);
+        }
+    } catch (notificationError) {
+        console.error('Failed to send notification:', notificationError);
+        // Don't fail the authentication process if notification fails
+    }
+
+    // Delete session and return tokens
     await dynamoClient.delete({
-        TableName: process.env.SESSIONS_TABLE || 'AuthSessions',
+        TableName: SESSIONS_TABLE,
         Key: { tempToken }
     }).promise();
 
@@ -289,11 +340,13 @@ async function handleCipher(event) {
             accessToken: session.cognitoTokens.access_token,
             idToken: session.cognitoTokens.id_token,
             refreshToken: session.cognitoTokens.refresh_token,
-            message: 'Authentication complete!'
+            message: session.isNewUser ? 
+                'Registration and authentication complete! Welcome to DALScooter!' : 
+                'Authentication complete! Welcome back!',
+            isNewUser: session.isNewUser
         },
     );
 }
-
 
 async function handleStatus(event) {
     const { tempToken } = event.queryStringParameters || {};
@@ -316,7 +369,8 @@ async function handleStatus(event) {
             step1Complete: session.step1Complete,
             step2Complete: session.step2Complete,
             step3Complete: session.step3Complete,
-            currentStep: getCurrentStep(session)
+            currentStep: getCurrentStep(session),
+            isNewUser: session.isNewUser || false
         }
     );
 }
@@ -324,6 +378,123 @@ async function handleStatus(event) {
 // =====================
 // Helper Functions
 // =====================
+
+// Notification helper function
+async function sendNotification(type, data) {
+    if (!NOTIFICATION_QUEUE_URL) {
+        console.warn('NOTIFICATION_QUEUE_URL not configured, skipping notification');
+        return;
+    }
+    
+    try {
+        const message = {
+            type: type,
+            ...data,
+            timestamp: new Date().toISOString()
+        };
+        
+        const params = {
+            QueueUrl: NOTIFICATION_QUEUE_URL,
+            MessageBody: JSON.stringify(message),
+            MessageAttributes: {
+                'messageType': {
+                    DataType: 'String',
+                    StringValue: type
+                }
+            }
+        };
+        
+        const result = await sqs.sendMessage(params).promise();
+        console.log(`Notification queued: ${type}, MessageId: ${result.MessageId}`);
+        return result;
+    } catch (error) {
+        console.error('Error sending notification:', error);
+        throw error; // Re-throw to allow caller to handle
+    }
+}
+
+// Check if user is new (first time registration)
+async function checkIfNewUser(userId) {
+    try {
+        const result = await dynamoClient.get({
+            TableName: USERS_TABLE,
+            Key: { userId }
+        }).promise();
+        
+        return !result.Item; // Return true if user doesn't exist (new user)
+    } catch (error) {
+        console.error('Error checking if user is new:', error);
+        return true; // Assume new user if error occurs
+    }
+}
+
+// Store user information for new users
+async function storeUserInfo(userInfo) {
+    try {
+        const userData = {
+            userId: userInfo.sub,
+            email: userInfo.email,
+            firstName: userInfo.given_name || extractFirstNameFromEmail(userInfo.email),
+            lastName: userInfo.family_name || '',
+            registrationDate: new Date().toISOString(),
+            cognitoGroups: userInfo['cognito:groups'] || [],
+            lastLoginAt: new Date().toISOString(),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+        
+        await dynamoClient.put({
+            TableName: USERS_TABLE,
+            Item: userData,
+            ConditionExpression: 'attribute_not_exists(userId)' // Only create if doesn't exist
+        }).promise();
+        
+        console.log('New user stored:', userData.userId);
+    } catch (error) {
+        if (error.code !== 'ConditionalCheckFailedException') {
+            console.error('Error storing user info:', error);
+            throw error;
+        }
+        // User already exists, ignore conditional check failure
+    }
+}
+
+// Determine user type based on email or other logic
+function determineUserType(email) {
+    // You can customize this logic based on your requirements
+    if (email.includes('@dal.ca') || email.includes('@dalhousie.ca')) {
+        return 'student';
+    } else if (email.includes('admin') || email.includes('franchise')) {
+        return 'franchise';
+    } else {
+        return 'customer';
+    }
+}
+
+// Extract first name from email if not provided
+function extractFirstNameFromEmail(email) {
+    if (!email) return 'User';
+    
+    const localPart = email.split('@')[0];
+    // Remove numbers and special characters, capitalize first letter
+    const cleaned = localPart.replace(/[^a-zA-Z]/g, '');
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1).toLowerCase() || 'User';
+}
+
+// Get client IP address from event
+function getClientIpAddress(event) {
+    // Try to get IP from various possible locations in the event
+    if (event.requestContext?.identity?.sourceIp) {
+        return event.requestContext.identity.sourceIp;
+    }
+    if (event.headers?.['X-Forwarded-For']) {
+        return event.headers['X-Forwarded-For'].split(',')[0].trim();
+    }
+    if (event.headers?.['X-Real-IP']) {
+        return event.headers['X-Real-IP'];
+    }
+    return 'Unknown';
+}
 
 // Caesar cipher encode function
 function caesarShift(word, shift) {
@@ -352,14 +523,13 @@ function verifyCipherLogic(userResponse, cipherData) {
     return normalizedUserResponse === normalizedOriginal;
 }
 
-
 function generateTempToken() {
     return crypto.randomBytes(32).toString('hex');
 }
 
 async function getSession(tempToken) {
     const result = await dynamoClient.get({
-        TableName: process.env.SESSIONS_TABLE || 'AuthSessions',
+        TableName: SESSIONS_TABLE,
         Key: { tempToken }
     }).promise();
 
@@ -368,7 +538,7 @@ async function getSession(tempToken) {
     // Check expiration
     if (Date.now() > result.Item.expiresAt) {
         await dynamoClient.delete({
-            TableName: process.env.SESSIONS_TABLE || 'AuthSessions',
+            TableName: SESSIONS_TABLE,
             Key: { tempToken }
         }).promise();
         return null;
@@ -378,7 +548,6 @@ async function getSession(tempToken) {
 }
 
 async function exchangeCodeForTokens(code) {
-
     const tokenEndpoint = `https://${process.env.COGNITO_DOMAIN}/oauth2/token`;
 
     const params = new URLSearchParams({
@@ -411,7 +580,7 @@ async function exchangeCodeForTokens(code) {
 }
 
 async function getUserInfoFromToken(accessToken) {
-    console.log("here in user info")
+    console.log("Getting user info from token");
     const userInfoEndpoint = `https://${process.env.COGNITO_DOMAIN}/oauth2/userInfo`;
     const response = await axios.get(userInfoEndpoint, {
         headers: { 'Authorization': `Bearer ${accessToken}` }
@@ -421,7 +590,7 @@ async function getUserInfoFromToken(accessToken) {
 
 async function verifyQnaAnswers(userId, answers) {
     const userQna = await dynamoClient.get({
-        TableName: process.env.QNA_TABLE || 'UserSecurityQuestions',
+        TableName: QNA_TABLE,
         Key: { userId }
     }).promise();
 
@@ -432,19 +601,6 @@ async function verifyQnaAnswers(userId, answers) {
     return answers.every((answer, index) =>
         hashAnswer(answer) === userQna.Item.hashedAnswers[index]
     );
-}
-
-async function verifyCipherResponse(userId, cipherResponse) {
-    const userCipher = await dynamoClient.get({
-        TableName: process.env.CIPHER_TABLE || 'UserCipherKeys',
-        Key: { userId }
-    }).promise();
-
-    if (!userCipher.Item) {
-        return buildResponse(404, { message: 'User cipher data not found' });
-    }
-
-    return verifyCipherLogic(cipherResponse, userCipher.Item.cipherKey);
 }
 
 function hashAnswer(answer) {
@@ -460,7 +616,7 @@ function getCurrentStep(session) {
 
 async function getUserQnaAnswers(userId) {
     const result = await dynamoClient.get({
-        TableName: process.env.QNA_TABLE || 'UserSecurityQuestions',
+        TableName: QNA_TABLE,
         Key: { userId }
     }).promise();
 
@@ -475,10 +631,11 @@ async function storeQnaAnswers(userId, answers) {
     const hashedAnswers = answersArray.map(ans => hashAnswer(ans));
 
     await dynamoClient.put({
-        TableName: process.env.QNA_TABLE || 'UserSecurityQuestions',
+        TableName: QNA_TABLE,
         Item: {
             userId,
-            hashedAnswers
+            hashedAnswers,
+            createdAt: new Date().toISOString()
         }
     }).promise();
 }
