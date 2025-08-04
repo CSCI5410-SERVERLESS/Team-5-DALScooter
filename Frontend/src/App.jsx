@@ -6,10 +6,12 @@ import Owner from './pages/Owner';
 import User from './pages/User';
 import FeedbackSentimentDisplay from './pages/Feedback';
 import AnalyticsDashboard from './pages/AnalyticsDashboard';
+import ChatBot from './pages/ChatBot'; 
 
 function App() {
   return (
     <BrowserRouter>
+      {/* All Routes */}
       <Routes>
         <Route path="/" element={<User />} />
         <Route path="/auth" element={<Auth />} />
@@ -19,6 +21,9 @@ function App() {
         <Route path="/auth/cipher/callback" element={<Cipher />} />
         <Route path="/analytics" element={<AnalyticsDashboard />} />
       </Routes>
+
+      {/* ✅ Floating ChatBot available on all pages */}
+      <ChatBot />
     </BrowserRouter>
   );
 }
