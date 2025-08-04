@@ -1,9 +1,0 @@
-{
-  "IsEncrypted": true,
-  "Values": {
-    "FUNCTIONS_WORKER_RUNTIME": "CfDJ8GRXgCTw03xGu8oRzOoRz614ynriRPcFgqmO4ccAyX78ax9vl8qyac5GAC03NYG4L/eOC8tv5EADhmfRHR2DxlqcL6FDu8U2mfT+dxoPqwt+195kSSCeQ15j+01yaoqJ5g==",
-    "COSMOS_ENDPOINT": "https://dalscootercosmos8650.documents.azure.com:443/",
-    "COSMOS_KEY": "J2W1iylUNbbv8gXIT4SlKkEClHT5T8KYDSDK9QYVegeODAS0t65UhWSFyAR6ufOKKLceH9BpjN2hACDbsgIMFA=="
-  },
-  "ConnectionStrings": {}
-}
