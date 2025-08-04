@@ -1,0 +1,22 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "COSMOS_ENDPOINT": "https://dalscootercosmos8650.documents.azure.com:443/",
+    "COSMOS_KEY": "J2W1iylUNbbv8gXIT4SlKkEClHT5T8KYDSDK9QYVegeODAS0t65UhWSFyAR6ufOKKLceH9BpjN2hACDbsgIMFA==",
+
+    "AWS_ACCESS_KEY_ID": "ASIATR5K7EKPVEFBZJTN",
+    "AWS_SECRET_ACCESS_KEY": "o+E7sBJWAirKY40LE5RIab6nQsY0YuKk0Am3frCO",
+    "AWS_SESSION_TOKEN": "IQoJb3JpZ2luX2VjEJj//////////wEaCXVzLXdlc3QtMiJIMEYCIQCwUCEqqwlKkggVMp7bJiXNAoS6B4QldemSLKAx4mRdhgIhAOTSymj2HHweTD7b5d8eQBw90s1f3lgiurgWxYUwhoM+KrcCCMH//////////wEQARoMMjQ0NjM0ODIxMjc5Igytq4BVTt5MmbYGOmkqiwItS0m3TXt943pFntcQsVbohJowzpMm3u+hi39nKu6c+j5yRpuIBebA7jU/xhnJzHy9cDdctZstI12CzvKsUCGoslDjLLMD6kY28m5C9nIbV0c2DTvgcw3AyQVn8uiOtxXYSCOzw2XicrQIbVDQUR2QtyqJEUfrUMTx85NZyCbqaz8+K7cMhMnIceFfZpJQmaBVovQVx71qshqycqKOamhn0qB2JeY/NxLNW051qBDCdpj2KmJ+nfhdL+MFdp3nIT+CErBoe2Kj4PzE+zWtr6ud0kDo6w0Gg4Xw1X2K/U3VT21bch5JVAep3OKPWCseZaW40YtXjhhTus73zcw+GI3oqz9C0vf1T01U33kwsIqpxAY6nAExypdraLSmxxFgncM+sBiIYKjHujPlnkLjNFbQVRhVnkqxhv1tSpK4soCX3oI3kMQaRa7evogk1UzSRt8l8o27Ujjrv2nTFi7hjjrZLvF9YsO89rd1sEoxek5b4M+1vznL6Hti0gV6AMnTIflI8YdmU42KijQe8X6VsGq5P3sVPmPaRmo5sFcYhM5gBNZjTrU3D+90mTRosyouCDI=",
+
+    "SQS_URL": "https://sqs.us-east-1.amazonaws.com/244634821279/ConcernQueue",
+    "AWS_API_GATEWAY_URL": "https://llcrjx8j5c.execute-api.us-east-1.amazonaws.com/submit"
+
+  },
+  "Host": {
+    "CORS": "*",
+    "CORSCredentials": false
+  },
+
+  "ConnectionStrings": {}
+}
